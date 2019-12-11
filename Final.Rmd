@@ -1,0 +1,513 @@
+---
+title: "IDS 702 Final Project: US TV Series Renewal"
+author: "Jiayue (JY) Xu"
+date: "12/10/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(lattice)
+library(rms)
+library(gridExtra)
+library(xtable)
+library(arm)
+library(pROC)
+library(e1071)
+library(caret)
+library(lme4)
+library(rlist)
+library(sjPlot)
+library(broom)
+library(data.table)
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(arm)
+library(gridExtra)
+library(caret)
+library(pROC)
+library(car)
+library(GGally)
+library(corrplot)
+```
+
+```{r r1, include=FALSE}
+# data cleaning
+tvseries <- read.csv('tvseries.csv')
+tvseries <- tvseries[, 2:122]
+genrelist <- colnames(tvseries[, 98:120])
+tvseries_clean <- tvseries[,c(1, 4:33, 90:121)]
+cols <- c("ChangeAirDayTime", "FirstSeason", "Genre", "Certificate", genrelist, "EndedSeries", "Genre_Count")
+tvseries_clean[cols] <- lapply(tvseries_clean[cols], as.factor)
+tvseries_clean$Premier.Date <- as.numeric(as.Date(tvseries_clean$Premier.Date, format="%m/%d/%y"))
+tvseries_clean$Finale.Date <- as.numeric(as.Date(tvseries_clean$Finale.Date, format="%m/%d/%y"))
+tvseries_clean$Runtime <- as.numeric(tvseries_clean$Runtime)
+tvseries_clean$ReleaseYr <- as.numeric(tvseries_clean$ReleaseYr)
+tvseries_clean$ReleaseYr[is.na(tvseries$ReleaseYr)] <- 2014
+tvseries_clean$EndYr <- as.numeric(tvseries_clean$EndYr)
+tvseries_clean$EndYr[tvseries$EndYr == "On-Going"] <- 0
+tvseries_clean$IMDBrating <- as.numeric(tvseries_clean$IMDBrating)
+tvseries_clean$X18to49_MinDropPremiere <- (tvseries_clean$X18to49_Premiere - tvseries_clean$X18to49_Min)/tvseries_clean$X18to49_Premiere
+tvseries_clean$Total_MinDropPremiere <- (tvseries_clean$Total_Premiere - tvseries_clean$Total_Min)/tvseries_clean$Total_Premiere
+
+tvseries_clean$TVSeason2013 <- tvseries_clean$TVSeason - min(tvseries_clean$TVSeason)
+tvseries_clean$Season1 <- tvseries_clean$Season - 1
+tvseries_clean$Episode1 <- tvseries_clean$Episode - 1
+tvseries_clean$ReleaseYr1967 <- tvseries_clean$ReleaseYr - min(tvseries_clean$ReleaseYr)
+tvseries_clean$Network <- relevel(tvseries_clean$Network, "CBS")
+summary(tvseries_clean)
+```
+
+```{r r2, include=FALSE}
+#train test
+set.seed(123)
+tvseries_clean$train <- 0
+tvseries_clean$train[sample(nrow(tvseries_clean),nrow(tvseries_clean)*0.8, replace=F)] <- 1
+
+train <- tvseries_clean[tvseries_clean$train == 1,]
+test <- tvseries_clean[tvseries_clean$train == 0,]
+summary(train)
+str(train)
+```
+
+```{r r3 ,include = FALSE}
+par(mfrow = c(2,2))
+plot(tapply(train$Renewal, train$X18to49_Min, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Adults 18-49 Key Demo Rating - Min", xaxt="n")
+axis(1, at=1:35, labels=levels(train$X18to49_Min))
+plot(tapply(train$Renewal, train$Episode1, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:35, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$Season1, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Season", xaxt="n")
+axis(1, at=1:35, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$IMDBrating, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="IMDB Rating", xaxt="n")
+axis(1, at=1:100, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$Runtime, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Runtime", xaxt="n")
+axis(1, at=1:100, labels=levels(train$Runtime))
+
+plot(tapply(train$Renewal, train$X18to49_Avg, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Adults 18-49 Key Demo Rating - Avg", xaxt="n")
+axis(1, at=1:500, labels=levels(train$X18to49_Avg))
+plot(tapply(train$Renewal, train$X18to49_YrtoYrChange, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="X18to49_Min", xaxt="n")
+axis(1, at=1:35, labels=levels(train$X18to49_Min))
+plot(tapply(train$Renewal, train$X18to49_MinDropPremiere, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="X18to49_Min", xaxt="n")
+axis(1, at=1:35, labels=levels(train$X18to49_Min))
+
+
+plot(tapply(train$Renewal, train$Total_Min, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Total_Min", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Total_Min))
+plot(tapply(train$Renewal, train$Total_Avg, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Total_Max", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Total_Min))
+plot(tapply(train$Renewal, train$Total_Max, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Total_Avg", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Total_Min))
+plot(tapply(train$Renewal, train$Total_Premiere, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Total_Premier", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Total_Min))
+
+plot(tapply(train$Renewal, train$DaysfromTVSeasonPremiere, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="DaysfromTVSeasonPremiere", xaxt="n")
+axis(1, at=1:5, labels=levels(train$DaysfromTVSeasonPremiere))
+plot(tapply(train$Renewal, train$Genre_Count, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="DaysfromTVSeasonPremiere", xaxt="n")
+axis(1, at=1:5, labels=levels(train$DaysfromTVSeasonPremiere))
+plot(tapply(train$Renewal, train$Episode1, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$Season1, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$TVSeason2013, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$IMDBrating, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$Runtime, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:5, labels=levels(train$Episode))
+
+ggplot(train, aes(y=X18to49_Min, x=factor(Network), fill=factor(Renewal)))+
+  geom_boxplot() +
+  xlab('Network')+
+  ylab('Adults 18-49 Key Demo Rating - Min')+
+  ggtitle('Adults 18-49 Key Demo Rating - Min vs Renewal by Network')+
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(train, aes(y=X18to49_Min, x=factor(Genre_Count), fill=factor(Renewal)))+
+  geom_boxplot() +
+  xlab('Win')+
+  ylab('Adults 18-49 Key Demo Rating - Min')+
+  ggtitle('TeamPoints vs Win')+
+  theme(plot.title = element_text(hjust = 0.5),legend.position = 'none')
+
+ggplot(train, aes(y=Episode1, x=factor(Network), fill=factor(Renewal)))+
+  geom_boxplot() +
+  xlab('Win')+
+  ylab('TeamPoints')+
+  ggtitle('TeamPoints vs Win')+
+  theme(plot.title = element_text(hjust = 0.5),legend.position = 'none')
+
+chisq.test(table(train[,c("Renewal","Network")]))
+chisq.test(table(train[,c("Renewal","Genre_Count")]))
+chisq.test(table(train[,c("Renewal","Debut.on.Different.Day")]))
+chisq.test(table(train[,c("Renewal","Comedy")]))
+chisq.test(table(train[,c("Renewal","Crime")]))
+chisq.test(table(train[,c("Renewal","Action")]))
+chisq.test(table(train[,c("Renewal","Drama")]))
+chisq.test(table(train[,c("Renewal","Mystery")]))
+chisq.test(table(train[,c("Renewal","Romance")]))
+chisq.test(table(train[,c("Renewal","Adventure")]))
+chisq.test(table(train[,c("Renewal","Sci.Fi")]))
+chisq.test(table(train[,c("Renewal","Animation")]))
+chisq.test(table(train[,c("Renewal","Thriller")]))
+chisq.test(table(train[,c("Renewal","Fantasy")]))
+chisq.test(table(train[,c("Renewal","Horror")]))
+chisq.test(table(train[,c("Renewal","Sport")]))
+chisq.test(table(train[,c("Renewal","Biography")]))
+chisq.test(table(train[,c("Renewal","Animation")]))
+chisq.test(table(train[,c("Renewal","Reality.TV")]))
+chisq.test(table(train[,c("Renewal","Family")]))
+chisq.test(table(train[,c("Renewal","Musical")]))
+chisq.test(table(train[,c("Renewal","Music")]))
+chisq.test(table(train[,c("Renewal","Documentary")]))
+chisq.test(table(train[,c("Renewal","History")]))
+chisq.test(table(train[,c("Renewal","Western")]))
+chisq.test(table(train[,c("Renewal","Short")]))
+chisq.test(table(train[,c("Renewal","War")]))
+```
+
+# Summary
+
+This study uses logistic regression to investigate the factors affecting the odds of renewal of US tv shows and whether or not the odds of tv show renewal differs across different network or genres of the series. It is found that seasons with more episodes, higher 18 to 49 demographic ratings, premiered on a different day from its regular timeslot, and from series with higher IMDB rating tend to have higher odds of renewal, while seasons with higher season numbers and from series with longer episode runtime tend to have lower odds of renewal. It is also found that the odds of renewal differ across network that the show is being broadcasted, but do not differs across different genres of the series. Lastly, it can be concluded that the effect of 18 to 49 demographic rating on tv show renewal rates differ across different tv networks.
+
+# 1. Introduction
+
+This study aims to analyze the factors affecting the odds of renewal of US tv shows using data obtained from various online tv show databases to see which shows were renewed and which shows were not renewed for all shows aired from the tv seasons 2013/14 to 2018/2019. In addition, the odds of tv show renewal across different networks and genres are analyzed. This study will also further explore how the tv show renewal rates differ across different tv network for different show ratings.
+
+Section 2 describes the data sources, data transformation and the exploratory data analysis to understand the data based upon individual factors. In Section 3, the process of final model building is described, and the final model is presented. The evaluation of the final model and the statistical significance of individual parameters are discussed. Results that were obtained from the model selection are also summarized. Section 4 presents the conclusions that can be infered from the relationship and limitations of the model and the dataset.
+
+# 2. Data
+
+#### Data Preparation and Cleaning
+The data used for this analysis consists 2 major categories: season and series and compiled in 2 stages. Firstly, season data were obtianed from spoilertv.com and tvseriesfinale.com by extraction of published tables on their websites and merged using Microsoft Excel. This includes 609 seasons across 295 series from 5 major tv networks: ABC, CBS, CW, FOX, NBC. There are no missing fields in the records. Dataset is partitioned into training and test set based on 80:20 split.
+
+Season Features include:
+- Status: status of the show in the season (Renewed, Renewed/Ending, Ended, Cancelled, Cancelled/Revived)
+- Show: name of series
+- TVSeason: staring year of tv season (2013 to 2018)
+- Season: season number of the series in the season
+- Episode: number of episodes in the season
+- AirDay: day of the week that show is aired in the season, multiple entries if day changed
+- AirTime: timeslot that show is aired in the season, multiple entries if time changed
+- Debut.on.Different.Day: 1 for shows that premiered on a different day from its regular timeslot, 0 for otherwise
+- PremiereDay: date of premiere of show in the season
+- 18-49 key demo rating for every episode of the season (1 to 25)
+
+Next, series data were obtained from IMBD.com via web-scrapping.
+
+Series Features include:
+- Runtime: episode runtime of the series in mins
+- Certificate: rating category of the series
+- ReleaseYr: release year of the series
+- IMDBrating: IMDB rating of the series
+- Genre: IMDB genre of the series (string consists of 1 to 3 genre categories separated by comma)
+
+#### Data Transformation
+The process of data transformation include transforming existing variables as well as adding new features.
+
+New Season Features include:
+- TVSeason2013: transform TVSeason to number of years from 2013, calculated from TVSeason
+- Season1: number of additional season from minimum 1 season, calculated from Season
+- FirstSeason: 1 for season with season number = 1, 0 for otherwise, calculated from Season
+- Episode1: number of episodes in the season from minimum 1 episode, calculated from TVSeason
+- AirDayInitial: day of the week that show is initially aired in the season, first entry from AirDay
+- AirTimeInitial: timslot that show is initially aired in the season, first entry from AirTime
+- AirDayTimeInitial: day and timeslot that show is initially aired in the season, calculated from AirDayInitial and AirDayTimeInitial
+- ChangeAirDayTime: 1 for shows that change air time or day in the season, 0 for otherwise, calculated from AirDay and AirTime
+- DaysfromTVSeasonPremiere: number of days premiere date is from the first day of tv season, calculated from PremiereDay
+- X18to49_Min: minimum rating across all episodes in the season
+- X18to49_YrtoYrChange: % change in average rating from previous season of the series
+- X18to49_MinDropPremiere: % decrease in minimum rating from rating of premiere episode
+
+New Series Features include:
+- ReleaseYr1967: release year of the series
+- 12 Genre: IMDB genre of the series (string consists of 1 to 3 genre categories separated by comma)
+
+#### Exploratory Data Analysis
+With the binned scatter plots of all the continuous variables, four of which appeared to have a positive relationship with probabilty of renewal: X18to49_Min, Season1, Episode1, IMDBratings. This suggests that the odds of renewal of shows appears to be increasing with increases in the 18-49 key demographic ratings of the season, the number of seasons the show has been running, the number of episode in the season and the IMDB rating of the series.
+
+By conducting Chisq tests on the categorical variables, three of which were tested to be significant: Network, Genre_Count, Debut.on.Different.Day. This suggests that the odds of renewal are likely to differ across different network that the show is airing, across different categories of genre counts of series (i.e series with 1 genre may have a different renewal rate that series with 2 or 3 genre categories), and between shows that premiered on a different day from its regular timeslot or not. All the 12 dummy variables for each genre were tested to have insignificant association with renewal.
+
+From the boxplot of 18 to 49 demographic rating for renewed shows against non-renewed shows across different networks, it is observed that there are sifgnificant differences of the effects of 18 to 49 demographic rating on renewal across different networks. Hence this interaction term may be significant in determining the odds of renewal of the show and will be included in the model building process.
+
+```{r echo=FALSE}
+par(mfrow = c(2,2))
+plot(tapply(train$Renewal, train$X18to49_Min, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Adults 18-49 Key Demo Rating - Min", xaxt="n")
+axis(1, at=1:35, labels=levels(train$X18to49_Min))
+plot(tapply(train$Renewal, train$Episode1, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Episode", xaxt="n")
+axis(1, at=1:35, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$Season1, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="Season", xaxt="n")
+axis(1, at=1:35, labels=levels(train$Episode))
+plot(tapply(train$Renewal, train$IMDBrating, mean),col='blue4',pch=10, 
+     ylab="Renewal", xlab="IMDB Rating", xaxt="n")
+axis(1, at=1:100, labels=levels(train$Episode))
+```
+```{r out.height='170px', fig.width = 10, echo=FALSE}
+ggplot(train, aes(y=X18to49_Min, x=factor(Network), fill=factor(Renewal)))+
+  geom_boxplot() +
+  xlab('Network')+
+  ylab('Adults 18-49 Key Demo Rating - Min')+
+  ggtitle('Adults 18-49 Key Demo Rating - Min vs Renewal by Network')+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+# 3. Model
+
+By including all variables and the interaction term, the final model selected through selection using AIC and AUC value as the model selection criteria, is as below:
+
+$$logit(Pr[Renewal_i=1]) = \beta_0 + \beta_{1} {Episode1_i}  + \beta_{2} {X18to49\_Min_i} + \beta_{3} {Network_i} + \beta_{4} {TVSeason2013_i} + \beta_{5} {DaysfromTVSeasonPremiere_i} + \\ \beta_{6} {Debut.on.Different.Day_i} + \beta_{7} {Season1_i} + \beta_{8} {IMDBrating_i} + \beta_{9} {X18to49_MinDropPremiere_i} + \beta_{10} {Genre_Count_i} +\beta_{11} {Runtim_i} +  \\ \beta_{12} {X18to49_Min_{i}:Network_{i}}$$
+```{r r4, include=FALSE}
+FormulaSeason = Renewal ~ TVSeason2013 + Network + Season1 + FirstSeason + Episode1 + AirDayInitial + AirTimeInitial + AirDayTimeInitial + 
+  ChangeAirDayTime + Debut.on.Different.Day + DaysfromTVSeasonPremiere  + 
+  X18to49_Min + X18to49_YrtoYrChange + X18to49_MinDropPremiere + Network:X18to49_Min 
+
+FormulaShow = Renewal ~ TVSeason2013 + Network + Season1 + FirstSeason + Episode1 + AirDayInitial + AirTimeInitial + AirDayTimeInitial + 
+  ChangeAirDayTime + Debut.on.Different.Day + DaysfromTVSeasonPremiere  + 
+  X18to49_Min + X18to49_YrtoYrChange + X18to49_MinDropPremiere +
+  Runtime + Certificate + ReleaseYr1967 + IMDBrating + Genre_Count + Network:X18to49_Min 
+
+FormulaGenre12 = Renewal ~ TVSeason2013 + Network + Season1 + FirstSeason + Episode1 + AirDayInitial + AirTimeInitial + AirDayTimeInitial + 
+  ChangeAirDayTime + Debut.on.Different.Day + DaysfromTVSeasonPremiere  + 
+  X18to49_Min + X18to49_YrtoYrChange + X18to49_MinDropPremiere +
+  Runtime + Certificate + ReleaseYr1967 + IMDBrating +
+  Comedy + Crime + Action + Drama + Mystery + 
+  Romance + Adventure + Sci.Fi  + Animation + Thriller + Fantasy  + Horror  + 
+  Genre_Count + Network:X18to49_Min 
+
+glmseason = glm(FormulaSeason, data = train, family = binomial(link="logit"))
+summary(glmseason)
+
+glmshow = glm(FormulaShow, data = train, family = binomial(link="logit"))
+summary(glmshow)
+
+glmgenre12 = glm(FormulaGenre12, data = train, family = binomial(link="logit"))
+summary(glmgenre12)
+
+# model building
+glmnull = glm(Renewal ~ 1, data = train, family = binomial(link="logit"))
+
+glmstepaic1 = step(glmnull, scope = formula(glmseason), direction="both",trace=0)
+summary(glmstepaic1)
+
+glmstepaic2 = step(glmstepaic1, scope = formula(glmshow), direction="both",trace=0)
+summary(glmstepaic2)
+
+glmstepaic3 = step(glmstepaic2, scope = formula(glmgenre12), direction="both",trace=0)
+summary(glmstepaic3)
+```
+
+```{r r5 ,include=FALSE}
+glm <- glmstepaic3
+summary(glm)
+vif(glm)
+exp(glm$coefficients)
+roc(glm$y,glm$fitted.values,plot=T,print.thres="best",legacy.axes=T,
+    print.auc =T,col="red3")
+conf_mat <- confusionMatrix(as.factor(ifelse(glm$fitted.values >= 0.712, "1","0")),
+                            as.factor(glm$y),positive = "1")
+conf_mat$table
+conf_mat$overall["Accuracy"];
+conf_mat$byClass[c("Sensitivity","Specificity")]
+```
+
+The predictors variables selected include nine season variables (Episode1, 18to29 Min, Network, TVSeason2013, DaysfromTVSeasonPremiere, Debut.on.Different.DayYes, Season1, X18to49_MinDropPremiere), of which two were insignificant at 95% confidence level (DaysfromTVSeasonPremiere, X18to49_MinDropPremiere), three series variables (IMDBrating, Genre_Count, Runtime), one interaction term (X18to49_Min:NetworkABC), all of which were consistent with the EDA findings of each predictor variables. 
+
+### Model Building Process
+The methodology adopted in the model building was initialized with the stepwise selection of all season variables and interaction term between network and 18to49 rating using AIC and AUC values as the judgement criteria. The intermediate model was then supplied as the starting model for the next stepwise selection after including all the series variables except genre using using AIC and AUC values as the judgement criteria. Again the intermediate model was then supplied as the starting model for the next stepwise selection after including the 12 genre dummy variables using using AIC and AUC values as the judgement criteria. 
+
+### Model Assessment and Validation
+The scatter plot between residual and each of the numeric predictor variables shows only random scatter and no discernable pattern. The spread of the points appear to be constant across the scatter plot between residual and fitted values where it shows no discernable pattern, the model assumptions are met and can be used to answer the inferential questions.
+
+The confusion matrix is defined for the model for the training set. The cut-off value was reset according to the ROC curve's best threshold of 0.712. The final model can predict the true positives and true negatives proportionally with an overall accuracy of 85.63%. The optimal sensitivity and specificity suggest that the model is 84.22% correct at identifying true positives (i.e. actual renewals), and 88.24% correct identifying true negatives (i.e. non renewals). The estimated AUC based on the ROC curve is 0.926, which suggests the model is 92.6% well at successfully predicting whether a show will be renewed for any given season based on the given season and series statistics of the show.
+
+Further, the test set performance is also relatively decent, through decreased significantly from training set performance, probably due to the small size of the data. Using the same threshold from training set of 0.712, the overall accuracy decreased to 72.95%, with sensitivity and specificity of 69.23% and 79.55% respectively.
+
+```{r r6, include = FALSE}
+rawresid <- residuals(glmstepaic3,"resp")
+binnedplot(x=predict(glmstepaic3, type="response"),y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$Episode,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$IMDBrating,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$X18to49_Min,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$TVSeason,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$Runtime,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$Season,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+binnedplot(x=train$DaysfromTVSeasonPremiere,y=rawresid,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot",col.pts="navy")
+```
+
+```{r r7, include=FALSE}
+roc(test$Renewal,predict(glm, newdata = test, "response"),plot=T,print.thres="best",legacy.axes=T,
+    print.auc =T,col="red3")
+
+conf_mat <- confusionMatrix(as.factor(ifelse(predict(glm, newdata = test, "response") >= 0.712, "1","0")),
+                            as.factor(test$Renewal),positive = "1")
+conf_mat$table
+conf_mat$overall["Accuracy"];
+conf_mat$byClass[c("Sensitivity","Specificity")]
+```
+
+### Results
+Based on the logistic regression output, hold all other factors constant:
+- Every additional year after 2013, the odds of renewal of the show increases by 65%.
+- Every additional increase in the number of episode in the season, the odds of renewal of the show increases by 38%.
+- Every additional increase in the season number, the odds of renewal of the show decreases by 15%.
+- Shows that premiered on a different day from its regular timeslot were 80% less likely to be renewed compared to shows that did not.
+- Compared to CBS shows, ABC shows are 93% less likely to be renewed, NBC and FOX shows are 95% less likely to be renewed.
+- For CBS shows, every 1% increase in key demographic rating for adult age 18 to 49, the odds of renewal of the show increases by 2.80 times.
+- For ABC shows, every 1% increase in key demographic rating for adult age 18 to 49, the odds of renewal of the show increases by 55.93 times.
+- For FOX shows, every 1% increase in key demographic rating for adult age 18 to 49, the odds of renewal of the show increases by 123.60 times.
+- For NBC shows, every 1% increase in key demographic rating for adult age 18 to 49, the odds of renewal of the show increases by 341.96 times.
+- Every additional unit increase in the IMBD rating of the series, the odds of renewal of the show increases by 167%.
+- Every addtional min increase in the episode runtime of the series, the odds of renewal of the show decreases by 2%.
+
+```{r r8, include=FALSE}
+model_table <- cbind(coef(summary(glm)), exp(coef(summary(glm))[,1]), exp(confint(glm)))
+colnames(model_table)[5] <- "Exp Coefficient"
+colnames(model_table)[6] <- "Exp CI 2.5%"
+colnames(model_table)[7] <- "Exp CI 97.5%"
+```
+
+```{r}
+kable(model_table[, c(1:2, 4:7)], caption="Logistic Regression Results for Final Model", digits = 5, format="markdown")
+```
+
+# 5. Conclusion
+
+#### Limitations
+As data is compiled form various sources published by online third-party services, hence the accuracy of the data may be questionable. Also, as the actual date when renewal decision is announced is unknown, it is possible that the length of the season and/or the air day and time of the season is affected by the renewal/cancellation decision.
+
+#### Conclusions
+This study concludes that there are various factors affecting the odds of renewal of US tv shows, including number of episode in the season, how many seasons the show has been running, year of tv season, min 18 to 49 demographic rating, whether or not the season premiered on a different day from its regular timeslot, IMDB rating of the series, genre count of series, episode runtime of the series. Also, it is found that the odds of tv show renewal differs significantly across different network the show is being broadcasted, but do not differs across different genres of the series. Lastly, it can be concluded that the effect of 18 to 49 demographic rating on tv show renewal rates differ across different tv networks.
+
+# 6. Appendix
+Link to Github: https://github.com/jy-xu/IDS702-Final-Project
+
+```{r eval=FALSE}
+tvseries <- read.csv('Data.csv')
+#tvseries$TV.Season <- factor(tvseries$TV.Season)
+tvseries$FirstSeason <- 0
+tvseries$FirstSeason[tvseries$Season == 1] <- 1
+tvseries$Network = relevel(tvseries$Network, "NBC")
+tvseries$AirDayInitial = relevel(tvseries$AirDayInitial, "Sun")
+
+#web scrap
+library(rvest)
+
+for (show in tvseries$Show) {
+  showlink = gsub(" ", "+", show)
+  url <- paste('http://www.imdb.com/search/title/?title=', showlink, '&title_type=TVMini-Series&tvseries', sep = "")
+  webpage <- read_html(url)
+  genre_data_html <- html_nodes(webpage,'.genre')
+  genre_data <- html_text(genre_data_html)[1]
+  genre_data <- trimws(genre_data, which = c("both", "left", "right"), whitespace = "[ \t\r\n]")
+  tvseries$Genre[tvseries$Show == show] <- genre_data
+  
+  runtime_data_html <- html_nodes(webpage,'.runtime')
+  runtime_data <- html_text(runtime_data_html)[1]
+  runtime_data <- trimws(runtime_data, which = c("both", "left", "right"), whitespace = "[ \t\r\n]")
+  runtime_data <- strsplit(runtime_data, " ")[[1]][1]
+  tvseries$Runtime[tvseries$Show == show] <- runtime_data
+  
+  certificate_data_html <- html_nodes(webpage,'.certificate')
+  certificate_data <- html_text(certificate_data_html)[1]
+  certificate_data <- trimws(certificate_data, which = c("both", "left", "right"), whitespace = "[ \t\r\n]")
+  tvseries$Certificate[tvseries$Show == show] <- certificate_data
+  
+  releaseyr_data_html <- html_nodes(webpage,'.unbold')
+  releaseyr_data <- html_text(releaseyr_data_html)[2]
+  releaseyr_data <- gsub("[^0-9.-]", " ", releaseyr_data)
+  releaseyr_data <- trimws(releaseyr_data, which = c("both", "left", "right"), whitespace = "[ \t\r\n]")
+  releaseyr_data <- strsplit(releaseyr_data, " ")
+  tvseries$ReleaseYr[tvseries$Show == show] <- releaseyr_data[[1]][1]
+  tvseries$EndYr[tvseries$Show == show] <- releaseyr_data[[1]][2]
+  
+  imdbrating_data_html <- html_nodes(webpage,'strong')
+  imdbrating_data <- html_text(imdbrating_data_html)[3]
+  imdbrating_data <- trimws(imdbrating_data, which = c("both", "left", "right"), whitespace = "[ \t\r\n]")
+  tvseries$IMDBrating[tvseries$Show == show] <- imdbrating_data
+}
+
+tvseries$Certificate[is.na(tvseries$Certificate)] <- "Not Rated"
+tvseries$EndYr[is.na(tvseries$EndYr)] <- "On-Going"
+tvseries$EndedSeries <- 1
+tvseries$EndedSeries[tvseries$EndYr == "On-Going"] <- 0
+
+genrelist <- unique(unlist(strsplit(tvseries$Genre, split = ", ")))
+for (genre in genrelist) {
+  tvseries[genre] <- 0
+  tvseries[genre][tvseries$Genre %like% genre,] <- 1
+  if (genre == "Music") {
+    tvseries[genre][tvseries$Genre %like% "Musical",] <- 0
+  }
+}
+
+tvseries$Genre_Count <- rowSums(tvseries[genrelist])
+
+# genre aggregate counts
+genreagg <- data.frame(unlist(strsplit(tvseries$Genre, split = ", ")))
+colnames(genreagg) <- c("genre")
+genre_count <- genreagg %>%
+  group_by(genre) %>%
+  summarise(number = n())
+
+#tvseries$GenreMain <- do.call(rbind, strsplit(tvseries$Genre, split = ", "))[,1]
+GenreList = c("Action","Comedy", "Drama", "Crime")
+tvseries$GenreMain <- ""
+tvseries$GenreMain[tvseries$Action == 1] <- "Action"
+tvseries$GenreMain[tvseries$Comedy == 1] <- paste(tvseries$GenreMain, "Comedy", sep = "")
+tvseries$GenreMain[tvseries$Drama == 1] <- paste(tvseries$GenreMain, "Drama", sep = "")
+tvseries$GenreMain[tvseries$Crime == 1] <- paste(tvseries$GenreMain, "Crime", sep = "")
+tvseries$GenreMain[tvseries$GenreMain == ""] <- "Other"
+
+write.csv(tvseries, "tvseries.csv")
+```
+
+```{r r1, include=TRUE}
+```
+```{r r2 ,include=TRUE}
+```
+```{r r3, include=TRUE}
+```
+```{r r4 ,include=TRUE}
+```
+```{r r5, include=TRUE}
+```
+```{r r6 ,include=TRUE}
+```
+```{r r7, include=TRUE}
+```
+```{r r8 ,include=TRUE}
+```
+
